@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,7 +15,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.rememberScrollState
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -43,8 +47,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var compressor: SemanticCompressor
     private lateinit var updateManager: UpdateManager
 
-    private val gemmaE2bGpuUrl =
-        "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/blob/main/gemma-4-E2B-it-gpu.litertlm"
+    // 2.01GBのGPU版は軽量化のためVision Encoderを含まない構成があるため使用しない。
+    // 公式の2.59GBマルチモーダル版を推奨する。
+    private val gemmaE2bMultimodalUrl =
+        "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true"
     private val gemmaE2bModelListUrl =
         "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/tree/main"
 
@@ -80,15 +86,16 @@ class MainActivity : ComponentActivity() {
         if (modelManager.hasSavedModel()) {
             lifecycleScope.launch {
                 busy = true
-                status = "保存済みのGemma 4モデルを読み込んでいます…"
+                status = "保存済みのGemma 4モデルを確認しています…"
                 runCatching { modelManager.loadSaved() }
                     .onSuccess {
                         modelLoaded = true
                         status = "Gemma 4準備完了（${humanBytes(modelManager.savedModelSizeBytes())}）"
                     }
                     .onFailure {
+                        modelLoaded = false
                         logger.e("保存済みモデルの読み込みに失敗", it)
-                        status = "モデルの読み込みに失敗しました: ${it.message}"
+                        status = it.message ?: "モデルの読み込みに失敗しました"
                     }
                 busy = false
             }
@@ -108,8 +115,9 @@ class MainActivity : ComponentActivity() {
         ) { uri ->
             if (uri != null) importModel(uri)
         }
-        val imagePicker = androidx.activity.compose.rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
+
+        val photoPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+            ActivityResultContracts.PickVisualMedia()
         ) { uri ->
             selectedPhotoUri = uri
             resultFile = null
@@ -120,24 +128,32 @@ class MainActivity : ComponentActivity() {
                 } else {
                     "写真を選択しました。先にGemma 4を読み込んでください。"
                 }
-                logger.i("写真を選択: $uri")
+                logger.i("フォトピッカーから写真を選択: $uri")
             }
         }
+
         val logExporter = androidx.activity.compose.rememberLauncherForActivityResult(
             ActivityResultContracts.CreateDocument("text/plain")
         ) { uri ->
             if (uri != null) {
-                runCatching { logger.exportTo(uri) }
-                    .onSuccess { status = "ログを書き出しました" }
-                    .onFailure { status = "ログの書き出しに失敗しました: ${it.message}" }
+                lifecycleScope.launch {
+                    runCatching { logger.exportTo(uri) }
+                        .onSuccess { bytes -> status = "ログを書き出しました（${humanBytes(bytes)}）" }
+                        .onFailure {
+                            logger.e("ログの書き出しに失敗", it)
+                            status = "ログの書き出しに失敗しました: ${it.message}"
+                        }
+                }
             }
         }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+                .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text("Semantic Compressor", style = MaterialTheme.typography.headlineMedium)
@@ -157,23 +173,23 @@ class MainActivity : ComponentActivity() {
                     Text("1. Gemma 4", style = MaterialTheme.typography.titleMedium)
                     Text(
                         if (modelLoaded) {
-                            "モデル読み込み済み"
+                            "画像対応モデルを読み込み済み"
                         } else {
-                            "端末に保存したGemma 4の .litertlm モデルを読み込みます。"
+                            "画像入力に対応したGemma 4の .litertlm モデルを読み込みます。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                     )
 
                     Text(
-                        "推奨モデル: Gemma 4 E2B GPU版（約2GB）。ダウンロード後に下のボタンから選択してください。",
+                        "推奨: gemma-4-E2B-it.litertlm（約2.59GB）。2.01GBのGPU版は画像エンコーダが無い場合があるため使用しません。",
                         style = MaterialTheme.typography.bodySmall,
                     )
 
                     OutlinedButton(
-                        onClick = { openUrl(gemmaE2bGpuUrl) },
+                        onClick = { openUrl(gemmaE2bMultimodalUrl) },
                         enabled = !busy,
                     ) {
-                        Text("Gemma 4 E2B GPU版をダウンロード")
+                        Text("画像対応 Gemma 4 E2Bをダウンロード")
                     }
 
                     OutlinedButton(
@@ -203,13 +219,17 @@ class MainActivity : ComponentActivity() {
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "ギャラリーから『共有 → Semantic Compressor』で直接送ることもできます。",
+                        "ボタンを押すとAndroidの写真ギャラリー（フォトピッカー）が開きます。共有メニューから直接送ることもできます。",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     OutlinedButton(
-                        onClick = { imagePicker.launch(arrayOf("image/*")) },
+                        onClick = {
+                            photoPicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
                         enabled = !busy,
-                    ) { Text("写真を選択") }
+                    ) { Text("ギャラリーから写真を選択") }
 
                     Text("目標ファイルサイズ", style = MaterialTheme.typography.labelLarge)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -324,7 +344,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             busy = true
             modelLoaded = false
-            status = "Gemma 4モデルを取り込んでいます… 数GBのコピーなので端末によって時間がかかります"
+            status = "Gemma 4モデルを取り込んでいます… 数GBのコピーなので時間がかかります"
             runCatching { modelManager.importAndLoad(uri) }
                 .onSuccess {
                     modelLoaded = true
@@ -332,7 +352,7 @@ class MainActivity : ComponentActivity() {
                 }
                 .onFailure {
                     logger.e("モデルの取り込み・読み込みに失敗", it)
-                    status = "モデルエラー: ${it.message}"
+                    status = it.message ?: "モデルエラー"
                 }
             busy = false
         }
@@ -356,7 +376,13 @@ class MainActivity : ComponentActivity() {
                 }
                 .onFailure {
                     logger.e("圧縮に失敗", it)
-                    status = "圧縮に失敗しました: ${it.message}"
+                    val message = it.message.orEmpty()
+                    if (message.contains("TF_LITE_VISION_ENCODER", ignoreCase = true)) {
+                        modelLoaded = false
+                        status = "このモデルには画像エンコーダがありません。上の『画像対応 Gemma 4 E2B』をダウンロードして入れ替えてください。"
+                    } else {
+                        status = "圧縮に失敗しました: ${it.message}"
+                    }
                 }
             busy = false
         }
@@ -416,6 +442,7 @@ class MainActivity : ComponentActivity() {
     private fun humanBytes(bytes: Long): String = when {
         bytes >= 1024L * 1024L * 1024L -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
         bytes >= 1024L * 1024L -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+        bytes >= 1024L -> String.format("%.1f KB", bytes / 1024.0)
         else -> "$bytes B"
     }
 
