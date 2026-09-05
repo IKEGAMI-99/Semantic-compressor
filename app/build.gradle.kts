@@ -11,8 +11,26 @@ android {
         applicationId = "com.ikegami99.semanticcompressor"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull() ?: 3
+        versionName = System.getenv("APP_VERSION_NAME") ?: "0.1.2"
+    }
+
+    val personalKeystore = rootProject.file("signing/semantic-personal.keystore")
+    val personalSigning = if (personalKeystore.exists()) {
+        signingConfigs.create("personal") {
+            storeFile = personalKeystore
+            storePassword = "semantic1234"
+            keyAlias = "semantic"
+            keyPassword = "semantic1234"
+        }
+    } else {
+        null
+    }
+
+    buildTypes {
+        getByName("debug") {
+            personalSigning?.let { signingConfig = it }
+        }
     }
 
     buildFeatures {
