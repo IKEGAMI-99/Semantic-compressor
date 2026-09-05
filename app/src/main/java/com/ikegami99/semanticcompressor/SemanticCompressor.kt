@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -25,7 +27,7 @@ class SemanticCompressor(
         val previewQuality: Int,
     )
 
-    suspend fun compress(sourceUri: Uri, targetKb: Int): Result {
+    suspend fun compress(sourceUri: Uri, targetKb: Int): Result = withContext(Dispatchers.IO) {
         require(targetKb in 1..3)
         val workDir = File(context.cacheDir, "semantic_work").apply { mkdirs() }
         val modelInput = File(workDir, "analysis_${System.currentTimeMillis()}.jpg")
@@ -76,7 +78,7 @@ class SemanticCompressor(
                             logger.i(
                                 "Compressed image to ${archive.size} bytes target=$targetBytes preview=${dimension}px q=$quality"
                             )
-                            return Result(output, archive.size, dimension, quality)
+                            return@withContext Result(output, archive.size, dimension, quality)
                         }
                     }
                 } finally {
@@ -87,7 +89,7 @@ class SemanticCompressor(
             val best = smallest ?: error("Could not create semantic image")
             val output = writeResult(best.first)
             logger.w("Target $targetBytes bytes not reached; smallest=${best.first.size} bytes")
-            return Result(output, best.first.size, best.second, best.third)
+            Result(output, best.first.size, best.second, best.third)
         } finally {
             modelInput.delete()
             bitmap.recycle()
