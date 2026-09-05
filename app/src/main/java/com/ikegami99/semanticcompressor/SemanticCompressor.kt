@@ -14,6 +14,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlin.math.roundToInt
 
@@ -27,6 +28,11 @@ class SemanticCompressor(
         val sizeBytes: Int,
         val previewPixels: Int,
         val previewQuality: Int,
+    )
+
+    data class ShareReferences(
+        val preview: File,
+        val heads: File?,
     )
 
     suspend fun compress(sourceUri: Uri, targetKb: Int): Result = withContext(Dispatchers.IO) {
@@ -78,7 +84,7 @@ class SemanticCompressor(
             }
 
             val decoderText =
-                "AI decode v2: p.webp=global composition/color. m.json=authoritative subject/layout/camera/OCR data. h.webp, if present, is a left-to-right head reference strip for the first p[] subjects. Preserve subject count, apparent age, build, hair, eyewear/headwear, facial hair, clothing, accessories, pose/hand positions, spacing and visible text. Do not infer names or identities. Do not add major objects."
+                "AI decode v3: p.webp=global composition/color. m.json=authoritative subject/layout/camera/OCR data. m.json.n contains hard exact counts for recorded subject categories; any category recorded as 0 must not appear. h.webp, if present, is a left-to-right head reference strip for the first p[] subjects. Preserve subject count, apparent age, build, hair, eyewear/headwear, facial hair, clothing, accessories, pose/hand positions, spacing and visible text. Do not infer names or identities. Do not add unrecorded subjects or major objects."
 
             val dimensions = intArrayOf(32, 28, 24, 20, 16, 12)
             val qualities = intArrayOf(46, 38, 30, 22, 14, 7)
@@ -117,6 +123,36 @@ class SemanticCompressor(
         } finally {
             modelInput.delete()
             bitmap.recycle()
+        }
+    }
+
+    fun extractShareReferences(simg: File): ShareReferences {
+        val shareDir = File(context.cacheDir, "simg_share_refs")
+        if (shareDir.exists()) shareDir.deleteRecursively()
+        check(shareDir.mkdirs() || shareDir.isDirectory) { "共有用一時フォルダを作成できませんでした" }
+
+        ZipFile(simg).use { zip ->
+            val previewEntry = zip.getEntry("p.webp") ?: error(".simg に p.webp がありません")
+            val preview = File(shareDir, "p.webp")
+            zip.getInputStream(previewEntry).use { input ->
+                preview.outputStream().buffered().use { output -> input.copyTo(output) }
+            }
+
+            val headEntry = zip.getEntry("h.webp")
+            val heads = if (headEntry != null) {
+                File(shareDir, "h.webp").also { file ->
+                    zip.getInputStream(headEntry).use { input ->
+                        file.outputStream().buffered().use { output -> input.copyTo(output) }
+                    }
+                }
+            } else {
+                null
+            }
+
+            logger.i(
+                "Share references extracted: preview=${preview.length()} bytes heads=${heads?.length() ?: 0} bytes"
+            )
+            return ShareReferences(preview = preview, heads = heads)
         }
     }
 
@@ -205,6 +241,20 @@ class SemanticCompressor(
             else -> if (targetKb == 1) 90 else 140
         }
         putString(output, "s", input.optString("s"), summaryMax)
+
+        val sourceCounts = input.optJSONObject("n")
+        if (sourceCounts != null) {
+            val counts = JSONObject()
+            counts.put("people", sourceCounts.optInt("people", 0).coerceIn(0, 99))
+            counts.put("animals", sourceCounts.optInt("animals", 0).coerceIn(0, 99))
+            counts.put("vehicles", sourceCounts.optInt("vehicles", 0).coerceIn(0, 99))
+            output.put("n", counts)
+        } else {
+            val sourcePeople = input.optJSONArray("p")
+            if (sourcePeople != null) {
+                output.put("n", JSONObject().put("people", sourcePeople.length().coerceIn(0, 99)))
+            }
+        }
 
         val camera = input.optJSONObject("cam")
         if (camera != null && level >= 0) {
