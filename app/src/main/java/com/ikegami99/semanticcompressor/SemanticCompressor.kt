@@ -2,7 +2,9 @@ package com.ikegami99.semanticcompressor
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.ImageDecoder
+import android.graphics.Paint
 import android.net.Uri
 import android.os.Build
 import kotlinx.coroutines.Dispatchers
@@ -49,40 +51,62 @@ class SemanticCompressor(
 
         try {
             modelInput.outputStream().buffered().use { output ->
-                check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)) {
+                check(bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
                     "Could not create model input image"
                 }
             }
 
-            val rawSemantic = modelManager.analyze(modelInput)
+            val rawSemantic = modelManager.analyze(modelInput, targetKb)
             val targetBytes = targetKb * 1024
-            val metadata = compactMetadata(rawSemantic, targetKb)
+            val metadataLevels = when (targetKb) {
+                1 -> intArrayOf(0, -1)
+                else -> intArrayOf(2, 1, 0, -1)
+            }
+            val metadataVariants = metadataLevels
+                .map { compactMetadata(rawSemantic, targetKb, it) }
+                .distinct()
+
+            val headReference = if (targetKb >= 2) {
+                buildHeadReference(bitmap, rawSemantic, targetKb)
+            } else {
+                null
+            }
+            val headOptions: List<ByteArray?> = if (headReference != null) {
+                listOf(headReference, null)
+            } else {
+                listOf(null)
+            }
+
             val decoderText =
-                "AI decode: use p.webp for composition/color and m.json for semantics/layout. Reconstruct realistically; add no major objects."
+                "AI decode v2: p.webp=global composition/color. m.json=authoritative subject/layout/camera/OCR data. h.webp, if present, is a left-to-right head reference strip for the first p[] subjects. Preserve subject count, apparent age, build, hair, eyewear/headwear, facial hair, clothing, accessories, pose/hand positions, spacing and visible text. Do not infer names or identities. Do not add major objects."
 
             val dimensions = intArrayOf(32, 28, 24, 20, 16, 12)
-            val qualities = intArrayOf(42, 34, 26, 18, 10, 5)
+            val qualities = intArrayOf(46, 38, 30, 22, 14, 7)
             var smallest: Triple<ByteArray, Int, Int>? = null
 
-            for (dimension in dimensions) {
-                val scaled = scaleToBox(bitmap, dimension)
-                try {
-                    for (quality in qualities) {
-                        val preview = encodeWebp(scaled, quality)
-                        val archive = pack(preview, metadata, decoderText)
-                        if (smallest == null || archive.size < smallest!!.first.size) {
-                            smallest = Triple(archive, dimension, quality)
-                        }
-                        if (archive.size <= targetBytes) {
-                            val output = writeResult(archive)
-                            logger.i(
-                                "Compressed image to ${archive.size} bytes target=$targetBytes preview=${dimension}px q=$quality"
-                            )
-                            return@withContext Result(output, archive.size, dimension, quality)
+            for (head in headOptions) {
+                for ((metadataIndex, metadata) in metadataVariants.withIndex()) {
+                    for (dimension in dimensions) {
+                        val scaled = scaleToBox(bitmap, dimension)
+                        try {
+                            for (quality in qualities) {
+                                val preview = encodeWebp(scaled, quality)
+                                val archive = pack(preview, metadata, decoderText, head)
+                                if (smallest == null || archive.size < smallest!!.first.size) {
+                                    smallest = Triple(archive, dimension, quality)
+                                }
+                                if (archive.size <= targetBytes) {
+                                    val output = writeResult(archive)
+                                    logger.i(
+                                        "Compressed image to ${archive.size} bytes target=$targetBytes preview=${dimension}px q=$quality metadataVariant=$metadataIndex headRef=${head != null}"
+                                    )
+                                    return@withContext Result(output, archive.size, dimension, quality)
+                                }
+                            }
+                        } finally {
+                            if (scaled !== bitmap) scaled.recycle()
                         }
                     }
-                } finally {
-                    if (scaled !== bitmap) scaled.recycle()
                 }
             }
 
@@ -120,16 +144,29 @@ class SemanticCompressor(
         return out.toByteArray()
     }
 
-    private fun pack(preview: ByteArray, metadata: String, decoder: String): ByteArray {
+    private fun pack(
+        preview: ByteArray,
+        metadata: String,
+        decoder: String,
+        headReference: ByteArray?,
+    ): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
             zip.setLevel(9)
             zip.putNextEntry(ZipEntry("p.webp"))
             zip.write(preview)
             zip.closeEntry()
+
+            if (headReference != null) {
+                zip.putNextEntry(ZipEntry("h.webp"))
+                zip.write(headReference)
+                zip.closeEntry()
+            }
+
             zip.putNextEntry(ZipEntry("m.json"))
             zip.write(metadata.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
+
             zip.putNextEntry(ZipEntry("d.txt"))
             zip.write(decoder.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
@@ -137,65 +174,251 @@ class SemanticCompressor(
         return out.toByteArray()
     }
 
-    private fun compactMetadata(raw: String, targetKb: Int): String {
+    private fun extractJson(raw: String): JSONObject? {
         val firstBrace = raw.indexOf('{')
         val lastBrace = raw.lastIndexOf('}')
-        val jsonText = if (firstBrace >= 0 && lastBrace > firstBrace) {
-            raw.substring(firstBrace, lastBrace + 1)
-        } else {
-            ""
-        }
+        if (firstBrace < 0 || lastBrace <= firstBrace) return null
+        return runCatching { JSONObject(raw.substring(firstBrace, lastBrace + 1)) }.getOrNull()
+    }
 
-        val maxSummary = when (targetKb) {
-            1 -> 110
-            2 -> 210
-            else -> 320
-        }
-        val maxObjects = when (targetKb) {
-            1 -> 3
-            2 -> 5
-            else -> 6
-        }
-        val maxColors = when (targetKb) {
-            1 -> 3
-            2 -> 4
-            else -> 5
-        }
-
-        return runCatching {
-            val input = JSONObject(jsonText)
-            val output = JSONObject()
-            val summary = input.optString("s").take(maxSummary)
-            if (summary.isNotBlank()) output.put("s", summary)
-
-            val sourceObjects = input.optJSONArray("o") ?: JSONArray()
-            val objects = JSONArray()
-            for (i in 0 until minOf(sourceObjects.length(), maxObjects)) {
-                val item = sourceObjects.optJSONArray(i) ?: continue
-                val compact = JSONArray()
-                compact.put(item.optString(0).take(24))
-                for (j in 1..4) compact.put(item.optInt(j).coerceIn(0, 100))
-                objects.put(compact)
-            }
-            if (objects.length() > 0) output.put("o", objects)
-
-            val sourceColors = input.optJSONArray("c") ?: JSONArray()
-            val colors = JSONArray()
-            for (i in 0 until minOf(sourceColors.length(), maxColors)) {
-                colors.put(sourceColors.optString(i).take(7))
-            }
-            if (colors.length() > 0) output.put("c", colors)
-
-            val lighting = input.optString("l").take(if (targetKb == 1) 60 else 120)
-            if (lighting.isNotBlank()) output.put("l", lighting)
-            output.toString()
-        }.getOrElse {
+    private fun compactMetadata(raw: String, targetKb: Int, level: Int): String {
+        val input = extractJson(raw)
+        if (input == null) {
             val fallback = raw
                 .replace("```json", "")
                 .replace("```", "")
                 .replace('\n', ' ')
                 .trim()
-            JSONObject().put("s", fallback.take(maxSummary)).toString()
+            val max = when (targetKb) {
+                1 -> 160
+                2 -> 320
+                else -> 520
+            }
+            return JSONObject().put("s", fallback.take(max)).toString()
         }
+
+        val output = JSONObject()
+        val summaryMax = when {
+            level >= 2 -> if (targetKb == 3) 520 else 360
+            level == 1 -> if (targetKb == 1) 160 else 280
+            level == 0 -> if (targetKb == 1) 130 else 210
+            else -> if (targetKb == 1) 90 else 140
+        }
+        putString(output, "s", input.optString("s"), summaryMax)
+
+        val camera = input.optJSONObject("cam")
+        if (camera != null && level >= 0) {
+            val camOut = JSONObject()
+            putString(camOut, "shot", camera.optString("shot"), 42)
+            putString(camOut, "angle", camera.optString("angle"), 42)
+            if (level >= 1) {
+                putString(camOut, "view", camera.optString("view"), 42)
+                putString(camOut, "fov", camera.optString("fov"), 36)
+            }
+            if (camOut.length() > 0) output.put("cam", camOut)
+        }
+
+        val sourcePeople = input.optJSONArray("p") ?: JSONArray()
+        val people = JSONArray()
+        val maxPeople = when {
+            level >= 2 -> if (targetKb == 3) 6 else 4
+            level == 1 -> if (targetKb == 3) 4 else 3
+            else -> if (targetKb == 1) 2 else 3
+        }
+        for (i in 0 until minOf(sourcePeople.length(), maxPeople)) {
+            val person = sourcePeople.optJSONObject(i) ?: continue
+            val p = JSONObject()
+            copyBox(person.optJSONArray("b"))?.let { p.put("b", it) }
+            copyBox(person.optJSONArray("hb"))?.let { p.put("hb", it) }
+            putString(p, "age", person.optString("age"), if (level >= 1) 36 else 24)
+            if (level >= 1) putString(p, "build", person.optString("build"), 48)
+            putString(p, "hair", person.optString("hair"), if (level >= 1) 70 else 42)
+            if (level >= 1) putString(p, "face", person.optString("face"), if (level >= 2) 120 else 70)
+
+            val clothingLimit = when {
+                level >= 2 -> 5
+                level == 1 -> 4
+                level == 0 -> 3
+                else -> 2
+            }
+            copyStrings(person.optJSONArray("cl"), clothingLimit, if (level >= 1) 86 else 52)
+                .takeIf { it.length() > 0 }
+                ?.let { p.put("cl", it) }
+
+            val accessoryLimit = when {
+                level >= 2 -> 4
+                level == 1 -> 3
+                else -> 2
+            }
+            copyStrings(person.optJSONArray("acc"), accessoryLimit, if (level >= 1) 80 else 48)
+                .takeIf { it.length() > 0 }
+                ?.let { p.put("acc", it) }
+
+            putString(p, "pose", person.optString("pose"), when {
+                level >= 2 -> 130
+                level == 1 -> 90
+                else -> 58
+            })
+            if (level >= 1) {
+                putString(p, "expr", person.optString("expr"), 50)
+                putString(p, "dir", person.optString("dir"), 52)
+            }
+            if (p.length() > 0) people.put(p)
+        }
+        if (people.length() > 0) output.put("p", people)
+
+        val sourceObjects = input.optJSONArray("o") ?: JSONArray()
+        val objects = JSONArray()
+        val maxObjects = when {
+            level >= 2 -> 8
+            level == 1 -> 5
+            level == 0 -> 3
+            else -> 1
+        }
+        for (i in 0 until minOf(sourceObjects.length(), maxObjects)) {
+            val sourceObject = sourceObjects.optJSONObject(i) ?: continue
+            val obj = JSONObject()
+            putString(obj, "t", sourceObject.optString("t"), 40)
+            copyBox(sourceObject.optJSONArray("b"))?.let { obj.put("b", it) }
+            if (level >= 1) putString(obj, "a", sourceObject.optString("a"), if (level >= 2) 90 else 60)
+            if (obj.length() > 0) objects.put(obj)
+        }
+        if (objects.length() > 0) output.put("o", objects)
+
+        if (level >= 0) {
+            val backgroundLimit = when {
+                level >= 2 -> 4
+                level == 1 -> 3
+                else -> 1
+            }
+            copyStrings(input.optJSONArray("bg"), backgroundLimit, if (level >= 1) 100 else 70)
+                .takeIf { it.length() > 0 }
+                ?.let { output.put("bg", it) }
+        }
+
+        val colorLimit = when {
+            level >= 2 -> 6
+            level == 1 -> 5
+            level == 0 -> 3
+            else -> 2
+        }
+        copyStrings(input.optJSONArray("c"), colorLimit, 9)
+            .takeIf { it.length() > 0 }
+            ?.let { output.put("c", it) }
+
+        putString(output, "l", input.optString("l"), when {
+            level >= 2 -> 180
+            level == 1 -> 120
+            level == 0 -> 70
+            else -> 45
+        })
+
+        val sourceText = input.optJSONArray("txt") ?: JSONArray()
+        val texts = JSONArray()
+        val textLimit = when {
+            level >= 2 -> 4
+            level == 1 -> 2
+            else -> 1
+        }
+        for (i in 0 until minOf(sourceText.length(), textLimit)) {
+            val source = sourceText.optJSONObject(i) ?: continue
+            val item = JSONObject()
+            putString(item, "v", source.optString("v"), if (level >= 1) 80 else 40)
+            copyBox(source.optJSONArray("b"))?.let { item.put("b", it) }
+            if (item.length() > 0) texts.put(item)
+        }
+        if (texts.length() > 0) output.put("txt", texts)
+
+        return output.toString()
+    }
+
+    private fun putString(target: JSONObject, key: String, value: String, maxChars: Int) {
+        val text = value.trim()
+        if (text.isNotEmpty()) target.put(key, text.take(maxChars))
+    }
+
+    private fun copyStrings(source: JSONArray?, limit: Int, maxChars: Int): JSONArray {
+        val output = JSONArray()
+        if (source == null) return output
+        for (i in 0 until minOf(source.length(), limit)) {
+            val value = source.optString(i).trim()
+            if (value.isNotEmpty()) output.put(value.take(maxChars))
+        }
+        return output
+    }
+
+    private fun copyBox(source: JSONArray?): JSONArray? {
+        if (source == null || source.length() < 4) return null
+        val output = JSONArray()
+        for (i in 0..3) output.put(source.optInt(i).coerceIn(0, 100))
+        return output
+    }
+
+    private fun buildHeadReference(bitmap: Bitmap, rawSemantic: String, targetKb: Int): ByteArray? {
+        val input = extractJson(rawSemantic) ?: return null
+        val people = input.optJSONArray("p") ?: return null
+        val maxHeads = if (targetKb >= 3) 3 else 2
+        val headSize = if (targetKb >= 3) 28 else 22
+        val heads = mutableListOf<Bitmap>()
+
+        try {
+            for (i in 0 until minOf(people.length(), maxHeads)) {
+                val person = people.optJSONObject(i) ?: continue
+                val headBox = person.optJSONArray("hb") ?: approximateHeadBox(person.optJSONArray("b")) ?: continue
+                cropNormalized(bitmap, headBox, 0.16f)?.let { crop ->
+                    val scaled = Bitmap.createScaledBitmap(crop, headSize, headSize, true)
+                    if (scaled !== crop) crop.recycle()
+                    heads += scaled
+                }
+            }
+
+            if (heads.isEmpty()) return null
+            val sheet = Bitmap.createBitmap(headSize * heads.size, headSize, Bitmap.Config.ARGB_8888)
+            try {
+                val canvas = Canvas(sheet)
+                val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+                heads.forEachIndexed { index, head ->
+                    canvas.drawBitmap(head, (index * headSize).toFloat(), 0f, paint)
+                }
+                val bytes = encodeWebp(sheet, if (targetKb >= 3) 44 else 34)
+                logger.i("Head reference created: heads=${heads.size} ${bytes.size} bytes")
+                return bytes
+            } finally {
+                sheet.recycle()
+            }
+        } finally {
+            heads.forEach { if (!it.isRecycled) it.recycle() }
+        }
+    }
+
+    private fun approximateHeadBox(personBox: JSONArray?): JSONArray? {
+        if (personBox == null || personBox.length() < 4) return null
+        val x = personBox.optInt(0).coerceIn(0, 100)
+        val y = personBox.optInt(1).coerceIn(0, 100)
+        val w = personBox.optInt(2).coerceIn(1, 100)
+        val h = (personBox.optInt(3).coerceIn(1, 100) * 0.34f).roundToInt().coerceAtLeast(1)
+        return JSONArray().put(x).put(y).put(w).put(h)
+    }
+
+    private fun cropNormalized(bitmap: Bitmap, box: JSONArray, margin: Float): Bitmap? {
+        if (box.length() < 4) return null
+        val x = box.optInt(0).coerceIn(0, 100) / 100f
+        val y = box.optInt(1).coerceIn(0, 100) / 100f
+        val w = box.optInt(2).coerceIn(1, 100) / 100f
+        val h = box.optInt(3).coerceIn(1, 100) / 100f
+
+        val leftNorm = (x - w * margin).coerceIn(0f, 1f)
+        val topNorm = (y - h * margin).coerceIn(0f, 1f)
+        val rightNorm = (x + w * (1f + margin)).coerceIn(0f, 1f)
+        val bottomNorm = (y + h * (1f + margin)).coerceIn(0f, 1f)
+
+        val left = (leftNorm * bitmap.width).roundToInt().coerceIn(0, bitmap.width - 1)
+        val top = (topNorm * bitmap.height).roundToInt().coerceIn(0, bitmap.height - 1)
+        val right = (rightNorm * bitmap.width).roundToInt().coerceIn(left + 1, bitmap.width)
+        val bottom = (bottomNorm * bitmap.height).roundToInt().coerceIn(top + 1, bitmap.height)
+
+        return runCatching {
+            Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+        }.getOrNull()
     }
 }
