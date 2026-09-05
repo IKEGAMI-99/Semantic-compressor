@@ -53,6 +53,15 @@ class MainActivity : ComponentActivity() {
     private val gemmaE2bModelListUrl =
         "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/tree/main"
 
+    private val simgDecodePrompt = """
+        添付した .simg はAI再構成用のセマンティック圧縮画像です。
+        ZIP互換ファイルとして内容を読み取り、d.txt の復号指示に従ってください。
+        p.webp を構図・色・位置関係の視覚参照として、m.json を被写体・配置・色・照明などの意味情報として使用してください。
+        元写真に意味的・構図的に近い高解像度画像を再構成してください。
+        記録されていない主要な物体は追加せず、低解像度で失われた細部だけを自然に補完してください。
+        これは元ピクセルの完全復元ではなく、.simg に保存された情報からの意味的再生成です。
+    """.trimIndent()
+
     private var busy by mutableStateOf(false)
     private var status by mutableStateOf("Gemma 4モデルが読み込まれていません")
     private var modelLoaded by mutableStateOf(false)
@@ -249,8 +258,12 @@ class MainActivity : ComponentActivity() {
                     if (resultFile != null) {
                         HorizontalDivider()
                         Text(resultDescription, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "共有時にAI向けの復号プロンプトも自動で添付します。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         Button(onClick = { shareFile(resultFile!!) }) {
-                            Text(".simgを共有")
+                            Text(".simgをChatGPT等へ共有")
                         }
                     }
                 }
@@ -432,10 +445,13 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/zip"
             putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TEXT, simgDecodePrompt)
+            putExtra(Intent.EXTRA_SUBJECT, "Semantic Compressor .simg 復号")
+            clipData = android.content.ClipData.newUri(contentResolver, file.name, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(intent, "セマンティック画像を共有"))
-        logger.i(".simgを共有: ${file.name} ${file.length()} bytes")
+        startActivity(Intent.createChooser(intent, "ChatGPTなどへ共有"))
+        logger.i(".simgを復号プロンプト付きで共有: ${file.name} ${file.length()} bytes")
     }
 
     private fun humanBytes(bytes: Long): String = when {
