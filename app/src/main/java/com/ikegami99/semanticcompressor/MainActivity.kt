@@ -2,6 +2,7 @@ package com.ikegami99.semanticcompressor
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -69,6 +70,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        handleIncomingImage(intent)
+
         if (modelManager.hasSavedModel()) {
             lifecycleScope.launch {
                 busy = true
@@ -87,6 +90,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingImage(intent)
+    }
+
     @Composable
     private fun SemanticCompressorScreen() {
         val modelPicker = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -100,7 +109,10 @@ class MainActivity : ComponentActivity() {
             selectedPhotoUri = uri
             resultFile = null
             resultDescription = ""
-            if (uri != null) logger.i("Photo selected: $uri")
+            if (uri != null) {
+                status = if (modelLoaded) "Photo selected. Ready to compress." else "Photo selected. Load Gemma 4 to continue."
+                logger.i("Photo selected: $uri")
+            }
         }
         val logExporter = androidx.activity.compose.rememberLauncherForActivityResult(
             ActivityResultContracts.CreateDocument("text/plain")
@@ -155,6 +167,10 @@ class MainActivity : ComponentActivity() {
                     Text("2. Photo", style = MaterialTheme.typography.titleMedium)
                     Text(
                         if (selectedPhotoUri == null) "No photo selected" else "Photo selected",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "You can also share a photo from Gallery directly to Semantic Compressor.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     OutlinedButton(
@@ -234,6 +250,30 @@ class MainActivity : ComponentActivity() {
                 ".simg is lossy semantic compression. It cannot reproduce the original pixels exactly.",
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+    }
+
+    private fun handleIncomingImage(incoming: Intent?) {
+        if (incoming?.action != Intent.ACTION_SEND) return
+        if (incoming.type?.startsWith("image/") != true) return
+
+        val uri: Uri? = if (Build.VERSION.SDK_INT >= 33) {
+            incoming.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            incoming.getParcelableExtra(Intent.EXTRA_STREAM)
+        }
+
+        if (uri != null) {
+            selectedPhotoUri = uri
+            resultFile = null
+            resultDescription = ""
+            status = if (modelLoaded) {
+                "Photo received from share sheet. Ready to compress."
+            } else {
+                "Photo received from share sheet. Load Gemma 4 to continue."
+            }
+            logger.i("Photo received via ACTION_SEND: $uri")
         }
     }
 
