@@ -28,22 +28,52 @@ class GemmaModelManager(
         logger.i("Importing Gemma 4 model from SAF")
         val temp = File(modelDir, "gemma4.litertlm.part")
         temp.delete()
+
         context.contentResolver.openInputStream(uri)?.use { input ->
             temp.outputStream().buffered().use { output -> input.copyTo(output, 1024 * 1024) }
-        } ?: error("Could not open selected model")
+        } ?: error("選択したモデルファイルを開けませんでした")
+
         if (temp.length() < 10_000_000) {
             temp.delete()
-            error("Selected file is too small to be a LiteRT-LM model")
+            error("選択したファイルが小さすぎます。.litertlmモデルを選択してください")
         }
+
         if (modelFile.exists()) modelFile.delete()
-        check(temp.renameTo(modelFile)) { "Could not finalize imported model" }
+        check(temp.renameTo(modelFile)) { "モデルファイルの保存に失敗しました" }
         logger.i("Model imported: ${modelFile.length()} bytes")
-        loadInternal()
+
+        try {
+            loadInternal()
+        } catch (t: Throwable) {
+            if (isVisionEncoderMissing(t)) {
+                logger.e("Imported model has no vision encoder", t)
+                close()
+                modelFile.delete()
+                throw IllegalStateException(
+                    "このGemma 4モデルには画像エンコーダが入っていません。約2.59GBの「gemma-4-E2B-it.litertlm」を使用してください。",
+                    t,
+                )
+            }
+            throw t
+        }
     }
 
     suspend fun loadSaved() = withContext(Dispatchers.IO) {
-        check(hasSavedModel()) { "No saved Gemma 4 model found" }
-        loadInternal()
+        check(hasSavedModel()) { "保存済みのGemma 4モデルがありません" }
+        try {
+            loadInternal()
+        } catch (t: Throwable) {
+            if (isVisionEncoderMissing(t)) {
+                logger.e("Saved model has no vision encoder; deleting incompatible model", t)
+                close()
+                modelFile.delete()
+                throw IllegalStateException(
+                    "保存済みモデルは画像入力に対応していません。約2.59GBの「gemma-4-E2B-it.litertlm」に入れ替えてください。",
+                    t,
+                )
+            }
+            throw t
+        }
     }
 
     private fun loadInternal() {
@@ -72,11 +102,28 @@ class GemmaModelManager(
                 )
             ).also { it.initialize() }
         }
-        logger.i("Gemma 4 engine initialized")
+
+        val current = engine ?: error("Gemma 4エンジンを初期化できませんでした")
+
+        // 画像エンコーダを持たない軽量GPU版でもEngine.initialize()までは成功する場合がある。
+        // createConversation()時点でTF_LITE_VISION_ENCODER欠落が判明するため、ロード直後に検証する。
+        runCatching {
+            current.createConversation(
+                ConversationConfig(
+                    maxOutputToken = 8,
+                    thinkingConfig = ThinkingConfig(enableThinking = false),
+                )
+            ).use { }
+        }.getOrElse { validationError ->
+            close()
+            throw validationError
+        }
+
+        logger.i("Gemma 4 multimodal engine initialized and conversation validated")
     }
 
     suspend fun analyze(imageFile: File): String = withContext(Dispatchers.IO) {
-        val current = engine ?: error("Gemma 4 model is not loaded")
+        val current = engine ?: error("Gemma 4モデルが読み込まれていません")
         val prompt = """
             Analyze this photo for semantic image compression. Return ONLY one compact JSON object, no markdown.
             Schema: {"s":"short scene summary","o":[["label",x,y,w,h]],"c":["#RRGGBB"],"l":"lighting/style"}
@@ -86,22 +133,48 @@ class GemmaModelManager(
         """.trimIndent()
 
         logger.i("Running Gemma 4 semantic analysis")
-        val response = current.createConversation(
-            ConversationConfig(
-                maxOutputToken = 256,
-                thinkingConfig = ThinkingConfig(enableThinking = false),
-            )
-        ).use { conversation ->
-            conversation.sendMessage(
-                Contents.of(
-                    Content.ImageFile(imageFile.absolutePath),
-                    Content.Text(prompt),
+        try {
+            val response = current.createConversation(
+                ConversationConfig(
+                    maxOutputToken = 256,
+                    thinkingConfig = ThinkingConfig(enableThinking = false),
                 )
-            )
+            ).use { conversation ->
+                conversation.sendMessage(
+                    Contents.of(
+                        Content.ImageFile(imageFile.absolutePath),
+                        Content.Text(prompt),
+                    )
+                )
+            }
+            val text = response.toString().trim()
+            logger.i("Gemma 4 semantic analysis complete: ${text.toByteArray().size} bytes")
+            text
+        } catch (t: Throwable) {
+            if (isVisionEncoderMissing(t)) {
+                logger.e("Vision encoder missing during analysis", t)
+                throw IllegalStateException(
+                    "このモデルには画像エンコーダがありません。約2.59GBの「gemma-4-E2B-it.litertlm」に入れ替えてください。",
+                    t,
+                )
+            }
+            throw t
         }
-        val text = response.toString().trim()
-        logger.i("Gemma 4 semantic analysis complete: ${text.toByteArray().size} bytes")
-        text
+    }
+
+    private fun isVisionEncoderMissing(t: Throwable): Boolean {
+        var current: Throwable? = t
+        while (current != null) {
+            val message = current.message.orEmpty()
+            if (
+                message.contains("TF_LITE_VISION_ENCODER", ignoreCase = true) ||
+                message.contains("vision encoder", ignoreCase = true) && message.contains("not found", ignoreCase = true)
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 
     fun close() {
