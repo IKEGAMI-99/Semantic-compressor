@@ -6,9 +6,16 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      APP_VERSION_NAME: 0.1.${{ github.run_number }}
+      APP_VERSION_CODE: ${{ github.run_number }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,10 +35,33 @@ jobs:
         with:
           gradle-version: '9.5.0'
 
+      - name: Restore fixed personal signing key
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p signing
+          base64 --decode .github/semantic-personal.keystore.b64 > signing/semantic-personal.keystore
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
+
+      - name: Rename APK
+        if: github.event_name == 'push'
+        run: cp app/build/outputs/apk/debug/app-debug.apk "Semantic-Compressor-v${APP_VERSION_NAME}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: semantic-compressor-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish GitHub Release for in-app update
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${APP_VERSION_NAME}"
+          gh release create "$TAG" \
+            "Semantic-Compressor-v${APP_VERSION_NAME}.apk" \
+            --target "$GITHUB_SHA" \
+            --title "Semantic Compressor ${TAG}" \
+            --notes "アプリ内アップデート用の自動ビルド。固定の個人用テスト署名を使用。" \
+            --latest
