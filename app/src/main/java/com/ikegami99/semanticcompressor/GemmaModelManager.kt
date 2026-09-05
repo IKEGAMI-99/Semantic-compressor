@@ -140,6 +140,7 @@ class GemmaModelManager(
             Use this schema exactly:
             {
               "s":"scene summary",
+              "n":{"people":0,"animals":0,"vehicles":0},
               "cam":{"shot":"","angle":"","view":"","fov":""},
               "p":[
                 {
@@ -163,6 +164,7 @@ class GemmaModelManager(
               "txt":[{"v":"visible text exactly if legible","b":[x,y,w,h]}]
             }
 
+            The n object is mandatory and must contain exact counts of visibly present people, living animals, and vehicles. Use 0 when a category is absent. Do not infer hidden or off-frame subjects.
             All b/hb coordinates are integer percentages 0-100: x,y,width,height relative to the full image.
             For every person, hb is the visible head including hair and headwear. Keep people in left-to-right order.
             Describe distinctive reconstruction-critical details explicitly: apparent age group, build, hairstyle, facial hair, eyewear, hats and their colors/text, jacket/shirt/suit/tie colors and materials, logos or visible text, hand positions, stance/walking state, overlap and spacing.
