@@ -43,14 +43,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var compressor: SemanticCompressor
     private lateinit var updateManager: UpdateManager
 
+    private val gemmaE2bGpuUrl =
+        "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/blob/main/gemma-4-E2B-it-gpu.litertlm"
+    private val gemmaE2bModelListUrl =
+        "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/tree/main"
+
     private var busy by mutableStateOf(false)
-    private var status by mutableStateOf("Gemma 4 model is not loaded")
+    private var status by mutableStateOf("Gemma 4モデルが読み込まれていません")
     private var modelLoaded by mutableStateOf(false)
     private var selectedPhotoUri by mutableStateOf<Uri?>(null)
     private var targetKb by mutableStateOf(2)
     private var resultFile by mutableStateOf<File?>(null)
     private var resultDescription by mutableStateOf("")
-    private var updateStatus by mutableStateOf("Not checked")
+    private var updateStatus by mutableStateOf("未確認")
     private var releaseInfo by mutableStateOf<UpdateManager.ReleaseInfo?>(null)
     private var downloadedUpdate by mutableStateOf<File?>(null)
 
@@ -60,7 +65,7 @@ class MainActivity : ComponentActivity() {
         modelManager = GemmaModelManager(this, logger)
         compressor = SemanticCompressor(this, modelManager, logger)
         updateManager = UpdateManager(this, logger)
-        logger.i("App started version=${BuildConfig.VERSION_NAME}")
+        logger.i("アプリ起動 version=${BuildConfig.VERSION_NAME}")
 
         setContent {
             MaterialTheme {
@@ -75,15 +80,15 @@ class MainActivity : ComponentActivity() {
         if (modelManager.hasSavedModel()) {
             lifecycleScope.launch {
                 busy = true
-                status = "Loading saved Gemma 4 model…"
+                status = "保存済みのGemma 4モデルを読み込んでいます…"
                 runCatching { modelManager.loadSaved() }
                     .onSuccess {
                         modelLoaded = true
-                        status = "Gemma 4 ready (${humanBytes(modelManager.savedModelSizeBytes())})"
+                        status = "Gemma 4準備完了（${humanBytes(modelManager.savedModelSizeBytes())}）"
                     }
                     .onFailure {
-                        logger.e("Saved model load failed", it)
-                        status = "Model load failed: ${it.message}"
+                        logger.e("保存済みモデルの読み込みに失敗", it)
+                        status = "モデルの読み込みに失敗しました: ${it.message}"
                     }
                 busy = false
             }
@@ -110,8 +115,12 @@ class MainActivity : ComponentActivity() {
             resultFile = null
             resultDescription = ""
             if (uri != null) {
-                status = if (modelLoaded) "Photo selected. Ready to compress." else "Photo selected. Load Gemma 4 to continue."
-                logger.i("Photo selected: $uri")
+                status = if (modelLoaded) {
+                    "写真を選択しました。圧縮できます。"
+                } else {
+                    "写真を選択しました。先にGemma 4を読み込んでください。"
+                }
+                logger.i("写真を選択: $uri")
             }
         }
         val logExporter = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -119,8 +128,8 @@ class MainActivity : ComponentActivity() {
         ) { uri ->
             if (uri != null) {
                 runCatching { logger.exportTo(uri) }
-                    .onSuccess { status = "Log exported" }
-                    .onFailure { status = "Log export failed: ${it.message}" }
+                    .onSuccess { status = "ログを書き出しました" }
+                    .onFailure { status = "ログの書き出しに失敗しました: ${it.message}" }
             }
         }
 
@@ -133,7 +142,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Text("Semantic Compressor", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "Gemma 4 analyzes the photo locally, then preserves only a tiny visual reference + semantics for AI reconstruction.",
+                "Gemma 4が写真を端末内で解析し、AIが再構成するために必要な最小限の画像情報と意味情報だけを保存します。",
                 style = MaterialTheme.typography.bodyMedium,
             )
 
@@ -147,14 +156,38 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Text("1. Gemma 4", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        if (modelLoaded) "Model loaded" else "Import a Gemma 4 .litertlm model from device storage.",
+                        if (modelLoaded) {
+                            "モデル読み込み済み"
+                        } else {
+                            "端末に保存したGemma 4の .litertlm モデルを読み込みます。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                     )
+
+                    Text(
+                        "推奨モデル: Gemma 4 E2B GPU版（約2GB）。ダウンロード後に下のボタンから選択してください。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+
+                    OutlinedButton(
+                        onClick = { openUrl(gemmaE2bGpuUrl) },
+                        enabled = !busy,
+                    ) {
+                        Text("Gemma 4 E2B GPU版をダウンロード")
+                    }
+
+                    OutlinedButton(
+                        onClick = { openUrl(gemmaE2bModelListUrl) },
+                        enabled = !busy,
+                    ) {
+                        Text("Gemma 4 E2Bのモデル一覧を開く")
+                    }
+
                     Button(
                         onClick = { modelPicker.launch(arrayOf("*/*")) },
                         enabled = !busy,
                     ) {
-                        Text(if (modelLoaded) "Replace model" else "Select .litertlm model")
+                        Text(if (modelLoaded) "モデルを入れ替える" else ".litertlmモデルを選択")
                     }
                 }
             }
@@ -164,21 +197,21 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("2. Photo", style = MaterialTheme.typography.titleMedium)
+                    Text("2. 写真", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        if (selectedPhotoUri == null) "No photo selected" else "Photo selected",
+                        if (selectedPhotoUri == null) "写真が選択されていません" else "写真を選択済み",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "You can also share a photo from Gallery directly to Semantic Compressor.",
+                        "ギャラリーから『共有 → Semantic Compressor』で直接送ることもできます。",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     OutlinedButton(
                         onClick = { imagePicker.launch(arrayOf("image/*")) },
                         enabled = !busy,
-                    ) { Text("Choose photo") }
+                    ) { Text("写真を選択") }
 
-                    Text("Target size", style = MaterialTheme.typography.labelLarge)
+                    Text("目標ファイルサイズ", style = MaterialTheme.typography.labelLarge)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         (1..3).forEach { kb ->
                             FilterChip(
@@ -192,13 +225,13 @@ class MainActivity : ComponentActivity() {
                     Button(
                         onClick = { compressSelectedPhoto() },
                         enabled = !busy && modelLoaded && selectedPhotoUri != null,
-                    ) { Text("Semantic Compress") }
+                    ) { Text("セマンティック圧縮") }
 
                     if (resultFile != null) {
                         HorizontalDivider()
                         Text(resultDescription, style = MaterialTheme.typography.bodyMedium)
                         Button(onClick = { shareFile(resultFile!!) }) {
-                            Text("Share .simg")
+                            Text(".simgを共有")
                         }
                     }
                 }
@@ -209,12 +242,12 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("Logs", style = MaterialTheme.typography.titleMedium)
-                    Text("Model loading, inference, compression size and update events are recorded locally.")
+                    Text("ログ", style = MaterialTheme.typography.titleMedium)
+                    Text("モデル読み込み、推論、圧縮サイズ、アップデート処理などを端末内に記録します。")
                     OutlinedButton(
                         onClick = { logExporter.launch("semantic-compressor-log.txt") },
                         enabled = !busy,
-                    ) { Text("Export log") }
+                    ) { Text("ログを書き出す") }
                 }
             }
 
@@ -223,23 +256,23 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("App update", style = MaterialTheme.typography.titleMedium)
-                    Text("Current: v${BuildConfig.VERSION_NAME}  •  $updateStatus")
+                    Text("アプリのアップデート", style = MaterialTheme.typography.titleMedium)
+                    Text("現在: v${BuildConfig.VERSION_NAME}  •  $updateStatus")
                     OutlinedButton(onClick = { checkForUpdate() }, enabled = !busy) {
-                        Text("Check GitHub Releases")
+                        Text("最新版を確認")
                     }
                     releaseInfo?.let { release ->
                         Button(onClick = { downloadUpdate(release) }, enabled = !busy) {
-                            Text("Download v${release.version}")
+                            Text("v${release.version}をダウンロード")
                         }
                     }
                     downloadedUpdate?.let { apk ->
                         Button(onClick = {
                             if (!updateManager.install(apk)) {
-                                updateStatus = "Allow app installs, then tap Install again"
+                                updateStatus = "このアプリからのインストールを許可して、もう一度タップしてください"
                             }
                         }) {
-                            Text("Install downloaded update")
+                            Text("ダウンロードした更新をインストール")
                         }
                     }
                 }
@@ -247,9 +280,19 @@ class MainActivity : ComponentActivity() {
 
             Spacer(Modifier.height(8.dp))
             Text(
-                ".simg is lossy semantic compression. It cannot reproduce the original pixels exactly.",
+                ".simgは意味を優先した非可逆圧縮です。元写真のピクセルを完全に復元するものではありません。",
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+    }
+
+    private fun openUrl(url: String) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            logger.i("外部リンクを開く: $url")
+        }.onFailure {
+            logger.e("外部リンクを開けませんでした", it)
+            status = "ブラウザを開けませんでした: ${it.message}"
         }
     }
 
@@ -269,11 +312,11 @@ class MainActivity : ComponentActivity() {
             resultFile = null
             resultDescription = ""
             status = if (modelLoaded) {
-                "Photo received from share sheet. Ready to compress."
+                "共有された写真を受け取りました。圧縮できます。"
             } else {
-                "Photo received from share sheet. Load Gemma 4 to continue."
+                "共有された写真を受け取りました。先にGemma 4を読み込んでください。"
             }
-            logger.i("Photo received via ACTION_SEND: $uri")
+            logger.i("共有から写真を受信: $uri")
         }
     }
 
@@ -281,15 +324,15 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             busy = true
             modelLoaded = false
-            status = "Importing Gemma 4 model… this is a multi-GB copy"
+            status = "Gemma 4モデルを取り込んでいます… 数GBのコピーなので端末によって時間がかかります"
             runCatching { modelManager.importAndLoad(uri) }
                 .onSuccess {
                     modelLoaded = true
-                    status = "Gemma 4 ready (${humanBytes(modelManager.savedModelSizeBytes())})"
+                    status = "Gemma 4準備完了（${humanBytes(modelManager.savedModelSizeBytes())}）"
                 }
                 .onFailure {
-                    logger.e("Model import/load failed", it)
-                    status = "Model error: ${it.message}"
+                    logger.e("モデルの取り込み・読み込みに失敗", it)
+                    status = "モデルエラー: ${it.message}"
                 }
             busy = false
         }
@@ -299,21 +342,21 @@ class MainActivity : ComponentActivity() {
         val uri = selectedPhotoUri ?: return
         lifecycleScope.launch {
             busy = true
-            status = "Gemma 4 is analyzing the photo…"
+            status = "Gemma 4が写真を解析しています…"
             runCatching { compressor.compress(uri, targetKb) }
                 .onSuccess { result ->
                     resultFile = result.file
                     resultDescription =
-                        "${result.sizeBytes} bytes (${String.format("%.2f", result.sizeBytes / 1024.0)} KB) • preview ${result.previewPixels}px • WebP q${result.previewQuality}"
+                        "${result.sizeBytes} バイト（${String.format("%.2f", result.sizeBytes / 1024.0)} KB） • プレビュー ${result.previewPixels}px • WebP 品質 ${result.previewQuality}"
                     status = if (result.sizeBytes <= targetKb * 1024) {
-                        "Target reached"
+                        "目標サイズに収まりました"
                     } else {
-                        "Best effort result exceeded ${targetKb} KB"
+                        "最小化しましたが ${targetKb} KBを超えました"
                     }
                 }
                 .onFailure {
-                    logger.e("Compression failed", it)
-                    status = "Compression failed: ${it.message}"
+                    logger.e("圧縮に失敗", it)
+                    status = "圧縮に失敗しました: ${it.message}"
                 }
             busy = false
         }
@@ -322,17 +365,21 @@ class MainActivity : ComponentActivity() {
     private fun checkForUpdate() {
         lifecycleScope.launch {
             busy = true
-            updateStatus = "Checking…"
+            updateStatus = "確認中…"
             releaseInfo = null
             downloadedUpdate = null
             runCatching { updateManager.checkLatest() }
                 .onSuccess { release ->
                     releaseInfo = release
-                    updateStatus = if (release == null) "No newer APK release found" else "v${release.version} available"
+                    updateStatus = if (release == null) {
+                        "新しいAPKはありません"
+                    } else {
+                        "v${release.version}が利用できます"
+                    }
                 }
                 .onFailure {
-                    logger.e("Update check failed", it)
-                    updateStatus = "Check failed: ${it.message}"
+                    logger.e("アップデート確認に失敗", it)
+                    updateStatus = "確認に失敗しました: ${it.message}"
                 }
             busy = false
         }
@@ -341,15 +388,15 @@ class MainActivity : ComponentActivity() {
     private fun downloadUpdate(release: UpdateManager.ReleaseInfo) {
         lifecycleScope.launch {
             busy = true
-            updateStatus = "Downloading v${release.version}…"
+            updateStatus = "v${release.version}をダウンロード中…"
             runCatching { updateManager.download(release) }
                 .onSuccess {
                     downloadedUpdate = it
-                    updateStatus = "Downloaded v${release.version}"
+                    updateStatus = "v${release.version}をダウンロードしました"
                 }
                 .onFailure {
-                    logger.e("Update download failed", it)
-                    updateStatus = "Download failed: ${it.message}"
+                    logger.e("アップデートのダウンロードに失敗", it)
+                    updateStatus = "ダウンロードに失敗しました: ${it.message}"
                 }
             busy = false
         }
@@ -362,8 +409,8 @@ class MainActivity : ComponentActivity() {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(intent, "Share semantic image"))
-        logger.i("Sharing .simg: ${file.name} ${file.length()} bytes")
+        startActivity(Intent.createChooser(intent, "セマンティック画像を共有"))
+        logger.i(".simgを共有: ${file.name} ${file.length()} bytes")
     }
 
     private fun humanBytes(bytes: Long): String = when {
