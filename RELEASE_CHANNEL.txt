@@ -1,0 +1,4 @@
+Semantic Compressor in-app update channel
+
+GitHub Actions publishes every main-branch build as a fixed-signature GitHub Release.
+This file also serves as a one-time pipeline verification change after the signing/update fix.
