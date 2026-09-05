@@ -1,5 +1,6 @@
 package com.ikegami99.semanticcompressor
 
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -55,22 +56,25 @@ class MainActivity : ComponentActivity() {
 
     private val simgDecodePrompt = """
         添付した .simg はAI再構成用のセマンティック圧縮画像です。
-        ZIP互換ファイルとして展開し、d.txt の復号規則を最優先で確認してください。
-        以下の情報を統合して、元写真に意味・構図・被写体外観ができるだけ近い高解像度画像を再構成してください。
+        同時添付されている p.webp と、存在する場合は h.webp は、この .simg 内からそのまま抽出した視覚参照画像です。別の写真ではありません。
+        .simg はZIP互換ファイルとして展開し、d.txt と m.json も必ず読み取ってください。
+        以下の情報を統合し、元写真に意味・構図・被写体外観ができるだけ近い高解像度画像を再構成してください。
 
-        ・p.webp: 全体構図、被写体数、位置、大きさ、色、背景、画角の視覚参照です。
-        ・h.webp: 存在する場合、人物の頭部・顔・髪・帽子・眼鏡などの局所視覚参照です。人物の外観再構成では p.webp より高い優先度で使用してください。
-        ・m.json: 被写体と構図に関する主要な意味情報です。人物ごとの全身BBox・頭部BBox、年齢感、体格、髪型、見える顔特徴、服装、帽子・眼鏡・ネクタイ等のアクセサリ、姿勢、手の位置、表情、向き、カメラ情報、背景構造、OCRなど、保存されている項目を可能な限り忠実に反映してください。
+        ・同時添付の p.webp: 全体構図、被写体数、位置、大きさ、色、背景、画角の直接的な画像参照です。
+        ・同時添付の h.webp: 存在する場合、人物の頭部・顔・髪・帽子・眼鏡などの局所画像参照です。人物外観では p.webp より優先してください。
+        ・m.json: 被写体と構図に関する意味情報です。人物BBox・頭部BBox、年齢感、体格、髪型、見える顔特徴、服装、アクセサリ、姿勢、手の位置、表情、向き、カメラ情報、背景構造、OCRなどを忠実に反映してください。
+        ・m.json の n: people / animals / vehicles の正確な存在数です。これはハード制約です。0と記録されたカテゴリを生成画像へ追加してはいけません。
         ・d.txt: 復号方法と情報の優先順位です。
 
         再構成ルール:
-        1. 被写体の人数、左右順、位置、大きさ、間隔、向き、ポーズを変えないでください。
-        2. 人物は m.json と h.webp の特徴を優先し、年齢感、体格、髪型、顔の見える特徴、服装、帽子、眼鏡、アクセサリ、手の位置を勝手に変更しないでください。
-        3. p.webp の画角、カメラ高さ、背景配置、主要色、照明、前後関係を維持してください。
-        4. OCRやロゴなど保存されている文字情報は可能な範囲で反映し、記録されていない文字を創作しないでください。
-        5. 記録されていない主要な人物・物体は追加せず、低解像度化で失われた微細な質感や自然なディテールだけを補完してください。
-        6. 情報が矛盾する場合、人物の局所外観は h.webp > m.json > p.webp、全体構図は p.webp > m.json の順で優先してください。
-        7. 人物の実名や身元は推測せず、.simg に保存された視覚特徴だけを使って再構成してください。
+        1. m.json.n の存在数を厳密に守ってください。0のカテゴリは一切描画せず、記録されていない被写体を創作しないでください。
+        2. 被写体の人数、左右順、位置、大きさ、間隔、向き、ポーズを変えないでください。
+        3. 人物は h.webp と m.json の特徴を優先し、年齢感、体格、髪型、顔の見える特徴、服装、帽子、眼鏡、アクセサリ、手の位置を勝手に変更しないでください。
+        4. p.webp の画角、カメラ高さ、背景配置、主要色、照明、前後関係を維持してください。
+        5. OCRやロゴなど保存されている文字情報は可能な範囲で反映し、記録されていない文字を創作しないでください。
+        6. 記録されていない主要な人物・物体は追加せず、低解像度化で失われた微細な質感や自然なディテールだけを補完してください。
+        7. 情報が矛盾する場合、人物の局所外観は h.webp > m.json > p.webp、全体構図は p.webp > m.json の順で優先してください。
+        8. 人物の実名や身元は推測せず、保存された視覚特徴だけを使って再構成してください。
 
         これは元ピクセルの完全復元ではなく、.simg に保存された情報からの意味的・視覚的再生成です。
         解析結果の説明だけで終わらず、最終的に画像として再構成してください。
@@ -273,11 +277,11 @@ class MainActivity : ComponentActivity() {
                         HorizontalDivider()
                         Text(resultDescription, style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            "共有時に p.webp / h.webp / m.json の優先順位を含む詳細なAI復号プロンプトを自動添付します。",
+                            "共有時に .simg と p.webp、存在する場合は h.webp を同時添付し、存在数制約を含む復号プロンプトも送ります。",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Button(onClick = { shareFile(resultFile!!) }) {
-                            Text(".simgをChatGPT等へ共有")
+                            Text("参照画像付きでChatGPT等へ共有")
                         }
                     }
                 }
@@ -455,17 +459,40 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun shareFile(file: File) {
-        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "application/zip"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_TEXT, simgDecodePrompt)
-            putExtra(Intent.EXTRA_SUBJECT, "Semantic Compressor .simg 復号")
-            clipData = android.content.ClipData.newUri(contentResolver, file.name, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching {
+            val references = compressor.extractShareReferences(file)
+            val files = buildList {
+                add(file)
+                add(references.preview)
+                references.heads?.let { add(it) }
+            }
+            val uris = ArrayList<Uri>(files.size)
+            files.forEach { sharedFile ->
+                uris += FileProvider.getUriForFile(this, "$packageName.files", sharedFile)
+            }
+
+            val clip = ClipData.newUri(contentResolver, file.name, uris.first())
+            for (i in 1 until uris.size) {
+                clip.addItem(ClipData.Item(uris[i]))
+            }
+
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                putExtra(Intent.EXTRA_TEXT, simgDecodePrompt)
+                putExtra(Intent.EXTRA_SUBJECT, "Semantic Compressor .simg 復号")
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "image/webp"))
+                clipData = clip
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "ChatGPTなどへ共有"))
+            logger.i(
+                ".simgを視覚参照付きで共有: ${file.name} attachments=${uris.size} ${file.length()} bytes"
+            )
+        }.onFailure {
+            logger.e("参照画像付き共有に失敗", it)
+            status = "共有に失敗しました: ${it.message}"
         }
-        startActivity(Intent.createChooser(intent, "ChatGPTなどへ共有"))
-        logger.i(".simgを復号プロンプト付きで共有: ${file.name} ${file.length()} bytes")
     }
 
     private fun humanBytes(bytes: Long): String = when {
