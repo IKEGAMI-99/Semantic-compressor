@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.rememberScrollState
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -377,7 +376,7 @@ class MainActivity : ComponentActivity() {
                 .onFailure {
                     logger.e("圧縮に失敗", it)
                     val message = it.message.orEmpty()
-                    if (message.contains("TF_LITE_VISION_ENCODER", ignoreCase = true)) {
+                    if (message.contains("画像エンコーダ") || message.contains("TF_LITE_VISION_ENCODER", ignoreCase = true)) {
                         modelLoaded = false
                         status = "このモデルには画像エンコーダがありません。上の『画像対応 Gemma 4 E2B』をダウンロードして入れ替えてください。"
                     } else {
